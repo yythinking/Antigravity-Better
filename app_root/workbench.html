@@ -1050,6 +1050,7 @@
 			// 其他按钮按 pattern 检查
 			const patterns = Object.entries(currentSettings.autoAcceptPatterns).filter(([_, v]) => v).map(([k]) => k);
 			if (!patterns.length) return false;
+			if (text === 'accept all' && !currentSettings.autoAcceptPatterns['accept all']) return false;
 			if (!patterns.some(p => text === p || (text.includes(p) && text.length <= p.length + 10))) return false;
 		}
 
@@ -1084,6 +1085,7 @@
 		return list.some(p => {
 			if (!p) return false;
 			const pl = p.toLowerCase().trim();
+			if (!pl) return false;
 			if (pl.length <= 3) {
 				const reg = new RegExp('\\b' + pl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
 				return reg.test(lower);
@@ -1241,7 +1243,7 @@
 			clearTimeout(window._abAATimer);
 			window._abAATimer = setTimeout(() => performAutoAccept(panelEl), 100);
 		});
-		autoAcceptObserver.observe(document.body, { childList: true, subtree: true, attributes: true });
+		autoAcceptObserver.observe(document.body, { childList: true, subtree: true });
 
 		autoAcceptIntervalTimer = setInterval(() => {
 			performAutoAccept(panelEl).catch(() => {});
