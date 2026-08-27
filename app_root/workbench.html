@@ -1011,14 +1011,14 @@
 		let container = btn.parentElement;
 		let depth = 0;
 		while (container && depth < 8) {
-			if (container.classList && (container.classList.contains('antigravity-agent-side-panel') || container.tagName === 'BODY')) {
-				container = container.parentElement ? container : btn.parentElement;
-				break;
-			}
 			if (container.matches && container.matches('[role="dialog"], form, [class*="modal"], [class*="dialog"], [class*="popup"], [class*="fixed"], [class*="overlay"], [class*="card"]')) {
 				break;
 			}
-			if (container.parentElement) container = container.parentElement;
+			if ((container.classList && container.classList.contains('antigravity-agent-side-panel')) || container.tagName === 'BODY') {
+				container = btn.parentElement; // 降级回退到按钮父元素，防止误用全局容器
+				break;
+			}
+			container = container.parentElement;
 			depth++;
 		}
 		const containerText = container ? (container.textContent || '').toLowerCase() : '';
@@ -1102,7 +1102,7 @@
 		return false;
 	}
 	function findDiffAcceptAllTarget(scope) {
-		const root = scope || document.querySelector('.antigravity-agent-side-panel') || document.body;
+		const root = scope || document.querySelector('.antigravity-agent-side-panel');
 		if (!root) return null;
 		return Array.from(root.querySelectorAll('span')).find(el => {
 			const text = (el.textContent || '').trim().toLowerCase();
@@ -1128,7 +1128,7 @@
 		return targets.find(el => root.contains(el) && !el.closest('#ab-overlay') && !el.closest('#ab-modal') && isVisibleEnabledActionElement(el));
 	}
 	function findScopedPermissionTarget(scope, expectedText) {
-		const root = scope || document.querySelector('.antigravity-agent-side-panel') || document.body;
+		const root = scope || document.querySelector('.antigravity-agent-side-panel');
 		if (!root) return null;
 		const normalizedExpected = normalizeAutoAcceptText(expectedText);
 		const candidates = Array.from(root.querySelectorAll('button, [role="button"], vscode-button, span, div')).filter(el => {
@@ -1141,6 +1141,26 @@
 		}
 		return null;
 	}
+	function triggerAutoAcceptClick(target) {
+		if (!target) return;
+		// 焦点守卫：记录当前活动元素，若用户正在终端或编辑器输入，点击后立刻归还焦点
+		const prevActive = document.activeElement;
+		const isTerminalOrEditorFocused = prevActive && (
+			prevActive.closest('.terminal, .xterm, .monaco-editor, .terminal-wrapper, .terminal-tabs') ||
+			prevActive.tagName === 'TEXTAREA' ||
+			prevActive.tagName === 'INPUT'
+		) && !prevActive.closest('.antigravity-agent-side-panel, [role="dialog"], #ab-modal');
+
+		if (typeof target.click === 'function') {
+			target.click();
+		} else if (typeof target.dispatchEvent === 'function') {
+			target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window }));
+		}
+
+		if (isTerminalOrEditorFocused && prevActive && typeof prevActive.focus === 'function') {
+			try { prevActive.focus(); } catch (e) { /* ignore */ }
+		}
+	}
 	async function performScopedPermissionAutoAccept(scope) {
 		if (!scope || !currentSettings.autoAcceptEnabled) return;
 		if (!currentSettings.autoAcceptUnlimited && currentSettings.autoAcceptRemaining <= 0) return;
@@ -1148,8 +1168,7 @@
 			const allowConversationTarget = findScopedPermissionTarget(scope, 'allow this conversation');
 			if (allowConversationTarget && (!allowConversationTarget.dataset.abClicked || (Date.now() - parseInt(allowConversationTarget.dataset.abClicked)) >= 2000)) {
 				allowConversationTarget.dataset.abClicked = Date.now().toString();
-				if (typeof allowConversationTarget.click === 'function') allowConversationTarget.click();
-				allowConversationTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window }));
+				triggerAutoAcceptClick(allowConversationTarget);
 				if (scope._abUpdateStats) scope._abUpdateStats({ clicks: 1 });
 				await new Promise(r => setTimeout(r, 100));
 			}
@@ -1158,8 +1177,7 @@
 			const alwaysAllowTarget = findScopedPermissionTarget(scope, 'always allow');
 			if (alwaysAllowTarget && (!alwaysAllowTarget.dataset.abClicked || (Date.now() - parseInt(alwaysAllowTarget.dataset.abClicked)) >= 2000)) {
 				alwaysAllowTarget.dataset.abClicked = Date.now().toString();
-				if (typeof alwaysAllowTarget.click === 'function') alwaysAllowTarget.click();
-				alwaysAllowTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window }));
+				triggerAutoAcceptClick(alwaysAllowTarget);
 				if (scope._abUpdateStats) scope._abUpdateStats({ clicks: 1 });
 				await new Promise(r => setTimeout(r, 100));
 			}
@@ -1170,8 +1188,11 @@
 		if (!currentSettings.autoAcceptUnlimited && currentSettings.autoAcceptRemaining <= 0) return;
 		
 		const sidePanel = panelEl || document.querySelector('.antigravity-agent-side-panel');
-		const scopes = [sidePanel, document.body].filter(Boolean);
-		const statsScope = sidePanel || panelEl || document.body;
+		// 仅扫描侧边栏及真正的独立弹窗容器，杜绝在全局 document.body 遍历误触终端或编辑器控件
+		const modals = Array.from(document.querySelectorAll('[role="dialog"], form, [class*="modal"], [class*="popup"], [class*="overlay"]'))
+			.filter(m => !m.closest('#ab-overlay') && !m.closest('#ab-modal') && (!sidePanel || !sidePanel.contains(m)));
+		const scopes = [sidePanel, ...modals].filter(Boolean);
+		const statsScope = sidePanel || document.body;
 
 		for (const scope of scopes) {
 			const buttons = scope.querySelectorAll('button, [role="button"], vscode-button');
@@ -1194,8 +1215,7 @@
 					} 
 				}
 				btn.dataset.abClicked = Date.now().toString();
-				if (typeof btn.click === 'function') btn.click();
-				btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window }));
+				triggerAutoAcceptClick(btn);
 				if (statsScope._abUpdateStats) statsScope._abUpdateStats({ clicks: 1 });
 				await new Promise(r => setTimeout(r, 100));
 			}
@@ -1204,10 +1224,9 @@
 				const acceptAllTarget = findDiffAcceptAllTarget(scope);
 				if (acceptAllTarget && (!acceptAllTarget.dataset.abClicked || (Date.now() - parseInt(acceptAllTarget.dataset.abClicked)) >= 2000)) {
 					acceptAllTarget.dataset.abClicked = Date.now().toString();
-					if (typeof acceptAllTarget.click === 'function') acceptAllTarget.click();
-					acceptAllTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window }));
+					triggerAutoAcceptClick(acceptAllTarget);
 					if (statsScope._abUpdateStats) statsScope._abUpdateStats({ clicks: 1 });
-				await new Promise(r => setTimeout(r, 100));
+					await new Promise(r => setTimeout(r, 100));
 				}
 			}
 			await performScopedPermissionAutoAccept(scope);
@@ -1218,14 +1237,11 @@
 		if (autoAcceptIntervalTimer) { clearInterval(autoAcceptIntervalTimer); autoAcceptIntervalTimer = null; }
 		if (!currentSettings.autoAcceptEnabled) return;
 
-		const sidePanel = panelEl || document.querySelector('.antigravity-agent-side-panel');
-		const observeTarget = document.body;
-
 		autoAcceptObserver = new MutationObserver(() => {
 			clearTimeout(window._abAATimer);
 			window._abAATimer = setTimeout(() => performAutoAccept(panelEl), 100);
 		});
-		autoAcceptObserver.observe(observeTarget, { childList: true, subtree: true, attributes: true });
+		autoAcceptObserver.observe(document.body, { childList: true, subtree: true, attributes: true });
 
 		autoAcceptIntervalTimer = setInterval(() => {
 			performAutoAccept(panelEl).catch(() => {});
