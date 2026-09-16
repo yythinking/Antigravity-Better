@@ -7,7 +7,7 @@ Antigravity 历史全量会话深度扫描与 Token 计费导出脚本 (跨平�
 1. 跨平台自动定位 Antigravity 历史存储目录（支持 Linux / macOS / Windows）
 2. 深度扫描 SQLite 数据库 (`conversations/*.db`) 与日志 (`transcript.jsonl`)
 3. 仅在模型来源可可靠识别时按模型计价，未知模型不静默套用默认价格
-4. 包含完整思考链过程（Thinking Tokens）；没有 provider usage 时不伪造 Prompt Cache
+4. 包含完整思考链过程（Thinking Tokens）；在缺少底层 Provider Usage 元数据时，对 2k 以上物理在席上下文采用 72% 启发式前缀缓存估算（并明确标注 estimated），绝不谎称为官方精确用量
 5. 生成可供前端直接一键「覆盖导入」的标准化 JSON 明细文件
 """
 
@@ -270,10 +270,11 @@ def extract_conv_models_from_db(db_path, scan_stats=None):
 def resolve_planner_models(planner_steps, db_step_models):
     """为 transcript 的 planner steps 建立可证明的模型映射。
 
-    gen_metadata.idx 是数据库内部索引，不保证等于 transcript 中的
-    PLANNER_RESPONSE 序号。因此只接受明确的 step_index 命中。多轮会话
-    即使当前观察到的元数据恰好只有一个模型，也不能证明缺失的轮次没有
-    使用另一个模型；只有单轮会话才允许使用该会话级推断，避免错价。
+    1. 优先通过 SQLite gen_metadata 与 transcript 的 step_index 精准对齐；
+    2. 单一模型会话兜底：当会话内所有已知轮次均为同一种模型时，未匹配步骤（如 503 报错/重试）
+       按该唯一主导模型兜底；
+    3. 多模型混合会话严谨处理：若会话内观测到多种不同模型，未匹配步骤严格标记为 unknown，
+       坚决不做跨模型邻近插值，避免将高价模型费率误套给低价模型。
     """
     resolved = {}
     for ordinal, step in enumerate(planner_steps):
@@ -291,18 +292,14 @@ def resolve_planner_models(planner_steps, db_step_models):
 
     distinct = set(db_step_models.values())
     if len(distinct) == 1:
-        # 当会话内已知轮次均为同一种模型时，未匹配步骤（如 503 报错/重试/取消）直接继承该主导模型
+        # 当会话内已知轮次均为同一种模型时，未匹配步骤直接继承该主导模型
         model_id = next(iter(distinct))
         for ordinal in range(len(planner_steps)):
             resolved.setdefault(ordinal, (model_id, 'session_dominant_model'))
-    elif len(distinct) > 1 and resolved:
-        # 多模型混合会话，对未匹配步骤做最近邻插值，避免孤立变成 unknown
-        known_ordinals = sorted(resolved.keys())
+    elif len(distinct) > 1:
+        # 多模型混合会话：未匹配步骤严格保留为 unknown，不作序号邻近插值
         for ordinal in range(len(planner_steps)):
-            if ordinal not in resolved:
-                closest_ord = min(known_ordinals, key=lambda k: abs(k - ordinal))
-                closest_model, _ = resolved[closest_ord]
-                resolved[ordinal] = (closest_model, 'interpolated_neighbor')
+            resolved.setdefault(ordinal, (None, 'unknown'))
     elif not resolved and not distinct:
         for ordinal in range(len(planner_steps)):
             resolved[ordinal] = (None, 'unknown')
@@ -445,6 +442,7 @@ def scan_all_history(base_dir, include_archived=False, return_stats=False):
         current_hour_str = ""
         current_timestamp = 0
         planner_ordinal = 0
+        last_valid_dt = None
         S_BASE = 0  # 离线回溯统一从 0 开始，与前端 DOM 起点保持一致
         CONTEXT_MAX = 1_000_000
         active_context_tokens = S_BASE
@@ -454,25 +452,30 @@ def scan_all_history(base_dir, include_archived=False, return_stats=False):
             step_type = step.get('type', '')
             created_at = step.get('created_at', '')
 
+            local_dt = None
             if created_at:
                 try:
                     clean_dt = created_at.replace('Z', '+00:00')
                     dt = datetime.fromisoformat(clean_dt)
                     local_dt = dt.astimezone()
-                    date_str = local_dt.strftime('%Y-%m-%d')
-                    hour_str = local_dt.strftime('%H:%M')
-                    timestamp = int(local_dt.timestamp() * 1000)
                 except Exception:
                     scan_stats['invalid_timestamp_values'] += 1
-                    local_dt = datetime.now()
-                    date_str = local_dt.strftime('%Y-%m-%d')
-                    hour_str = local_dt.strftime('%H:%M')
-                    timestamp = int(local_dt.timestamp() * 1000)
-            else:
-                local_dt = datetime.now()
-                date_str = local_dt.strftime('%Y-%m-%d')
-                hour_str = local_dt.strftime('%H:%M')
-                timestamp = int(local_dt.timestamp() * 1000)
+
+            if local_dt is None:
+                # 严谨回退策略：优先继承本会话前序有效步骤时间，其次使用文件修改时间，严禁使用运行时 now() 污染当天统计
+                if last_valid_dt is not None:
+                    local_dt = last_valid_dt
+                else:
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                        local_dt = datetime.fromtimestamp(mtime).astimezone()
+                    except Exception:
+                        local_dt = datetime(1970, 1, 1, 0, 0, 0)
+
+            last_valid_dt = local_dt
+            date_str = local_dt.strftime('%Y-%m-%d')
+            hour_str = local_dt.strftime('%H:%M')
+            timestamp = int(local_dt.timestamp() * 1000)
 
             # 严格仅判定真正的大模型生成步 (PLANNER_RESPONSE)，排除工具执行结果 (RUN_COMMAND, VIEW_FILE 等)
             # 1. 遇到脑图压缩检查点 (Compaction Checkpoint)，发生隐性上下文折叠重置

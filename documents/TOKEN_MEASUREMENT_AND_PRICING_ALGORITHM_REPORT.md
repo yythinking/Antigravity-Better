@@ -297,10 +297,9 @@ const sum = {
 | `gemini-3.6-flash` | Gemini 3.6 Flash | **$0.75** | **$3.75** | **$0.075** | — | — | — |
 | `claude-sonnet-4.6` | Claude Sonnet 4.6 | **$3.00** | **$15.00** | **$0.30** | — | — | — |
 | `claude-opus-4.6` | Claude Opus 4.6 | **$5.00** | **$25.00** | **$0.50** | — | — | — |
-| `gpt-5.4-omni` | GPT-5.4 Omni | **$2.50** | **$10.00** | **$1.25** | — | — | — |
-| `deepseek-chat` | DeepSeek-V3 / Chat | **$0.14** | **$0.28** | **$0.014** | — | — | — |
+| `gpt-oss-120b` | GPT-OSS 120B (Medium) | **$2.50** | **$10.00** | **$2.50** | — | — | — |
 
-*注：以上所有单价单位均为 **美元 / 100万 Tokens ($/1M Tokens)**。*
+*注：以上所有单价单位均为 **美元 / 100万 Tokens ($/1M Tokens)**。表格列出的是系统开箱预置模型（与 `MODEL_PRICING_REGISTRY` 及前端 `DEFAULT_MODEL_PRICING` 严格一致）。用户亦可在管理面板的「自定义模型费率」中随时添加其他模型（如 DeepSeek、OpenAI 系列），或覆盖默认单价。*
 
 ---
 

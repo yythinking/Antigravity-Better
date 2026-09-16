@@ -590,13 +590,37 @@
 	'use strict';
 	/* ===== Antigravity Better v0.3.0 ===== */
 	console.log('[AB] Antigravity Better v0.3.0 Loading...');
-        // ===== Trusted Types Policy =====
+	// ===== Trusted Types Policy & HTML Sanitization =====
+	function sanitizeHTML(html) {
+		const s = String(html || '');
+		if (!s) return '';
+		if (!s.includes('<') && !s.includes('>')) return s;
+		try {
+			const parser = new DOMParser();
+			const doc = parser.parseFromString(s, 'text/html');
+			const badEls = doc.querySelectorAll('script, iframe, object, embed, applet, base, meta, link[rel="import"]');
+			badEls.forEach(n => n.remove());
+			const allEls = doc.querySelectorAll('*');
+			allEls.forEach(el => {
+				Array.from(el.attributes).forEach(attr => {
+					const name = attr.name.toLowerCase();
+					const val = attr.value.toLowerCase().trim();
+					if (name.startsWith('on') || val.startsWith('javascript:') || val.startsWith('vbscript:') || val.startsWith('data:text/html')) {
+						el.removeAttribute(attr.name);
+					}
+				});
+			});
+			return doc.body.innerHTML;
+		} catch (e) {
+			return escapeHtml(s);
+		}
+	}
 	let abPolicy = null;
 	if (window.trustedTypes && window.trustedTypes.createPolicy) {
 		try {
 			abPolicy = window.trustedTypes.createPolicy('antigravityBetter', {
 				createHTML(s) {
-					return String(s || '');
+					return sanitizeHTML(s);
 				},
 				createScriptURL(value) {
 					const url = String(value);
@@ -621,12 +645,13 @@
 	}
 	function safeSetHTML(el, html) {
 		try {
+			const clean = sanitizeHTML(html);
 			if (abPolicy && abPolicy.createHTML) {
-				el.innerHTML = abPolicy.createHTML(html);
+				el.innerHTML = abPolicy.createHTML(clean);
 				return;
 			}
 			const parser = new DOMParser();
-			const doc = parser.parseFromString(html, 'text/html');
+			const doc = parser.parseFromString(clean, 'text/html');
 			while (el.firstChild) el.removeChild(el.firstChild);
 			Array.from(doc.body.childNodes).forEach(node => el.appendChild(node.cloneNode(true)));
 		} catch (e) {
@@ -1830,6 +1855,7 @@ add_pricing_cache_write: 'Cache Write ($/1M)',
 			} catch (e) {}
 		},
 		purgeCorruptTodayEstimates() {
+			// 自愈与数据清洗：清除结构性损坏记录（NaN、负数等非有限数值）
 			return new Promise((resolve) => {
 				this.queryRange('today').then(records => {
 					if (!records || !records.length) return resolve(0);
@@ -4832,6 +4858,7 @@ initSessionSwitchObserver() {
 				}).filter(Boolean);
 				this.currentSessionFingerprint = this.getSessionFingerprint(panel, chatContainer, fingerprintTurns);
 			}
+			let activeContextTokens = 0;
 			for (let i = 0; i < turns.length; i++) {
 				const turnNode = turns[i];
 				if (!turnNode || !turnNode.querySelector) continue;
@@ -4844,7 +4871,7 @@ initSessionSwitchObserver() {
 				const thText = thinkEl ? (thinkEl.textContent || '').trim() : '';
 				const aiText = aiEl ? (aiEl.textContent || '').trim() : '';
 					const contentRoots = [userEl, thinkEl, aiEl].filter(Boolean);
-					const rawActionEls = turnNode.querySelectorAll ? Array.from(turnNode.querySelectorAll('pre, [class*="terminal"], [class*="output"], [data-testid*="tool"], [class*="tool"], [data-artifact-id]')).filter(el => !contentRoots.some(root => root.contains(el) || el.contains(root))) : [];
+				const rawActionEls = turnNode.querySelectorAll ? Array.from(turnNode.querySelectorAll('pre, [class*="terminal"], [class*="output"], [data-testid*="tool"], [class*="tool"], [data-artifact-id]')).filter(el => !contentRoots.some(root => root.contains(el) || el.contains(root))) : [];
 				const actionEls = rawActionEls.filter(el => !rawActionEls.some(parent => parent !== el && parent.contains(el)));
 				let toolText = '';
 				const seenToolText = new Set();
@@ -4857,12 +4884,21 @@ initSessionSwitchObserver() {
 				const sig = this.buildTurnSignature(uText, thText, aiText, toolText, turnIdentity);
 				const userTokens = this.estimateTokens(uText);
 				const toolTokens = this.estimateTokens(toolText);
-				const inTokens = userTokens + toolTokens;
+				const turnRawIn = userTokens + toolTokens;
 				const thinkTokens = this.estimateTokens(thText);
 				const compTokens = this.estimateTokens(aiText);
 				const outTokens = thinkTokens + compTokens;
+
+				// 与 _scanConversationTurns 100% 同构对齐物理在席累积与 72% 前缀缓存
+				const inTokens = Math.max(turnRawIn, activeContextTokens + turnRawIn);
+				let cacheTokens = 0;
+				if (activeContextTokens >= 2000) {
+					cacheTokens = Math.min(activeContextTokens, Math.floor(inTokens * 0.72));
+				}
+				activeContextTokens = Math.min(1000000, inTokens + outTokens);
+
 				this.trackedTurnStates.set(turnIdentity, {
-					inTokens, outTokens, cacheTokens: 0, signature: sig
+					inTokens, outTokens, cacheTokens, signature: sig
 				});
 				this.processedHashes.add(sig);
 
@@ -4872,7 +4908,7 @@ initSessionSwitchObserver() {
 					keyNode.dataset.abTrackedIdentity = turnIdentity;
 					keyNode.dataset.abInTokens = String(inTokens);
 					keyNode.dataset.abOutTokens = String(outTokens);
-					keyNode.dataset.abCacheTokens = '0';
+					keyNode.dataset.abCacheTokens = String(cacheTokens);
 					if (aiEl) aiEl.dataset.abTrackedId = '1';
 					if (userEl) userEl.dataset.abTrackedId = '1';
 			}
@@ -5695,7 +5731,9 @@ initSessionSwitchObserver() {
 						(isLastTurn && this.networkUsageSeen && this.networkUsageSavedAt === this.networkUsageSeenAt &&
 							(Date.now() - this.networkUsageSavedAt) < 5000);
 					if (!networkLikelyCovered) {
-						const resolvedModel = this.currentModelStr || '';
+						// Antigravity 官方在单轮消息气泡 DOM 上未渲染独立模型属性，底栏全局选择器 this.currentModelStr 为离线 DOM 级估算的唯一可行业务推断依据
+						const turnNodeModel = turn.node?.dataset?.model || turn.aiEl?.dataset?.model || turn.userEl?.dataset?.model || '';
+						const resolvedModel = turnNodeModel || this.currentModelStr || '';
 						const mPricing = PricingManager.resolve(resolvedModel);
 						const pricingUsable = !!mPricing;
 						const is200k = inTokens > 200000;
