@@ -590,37 +590,13 @@
 	'use strict';
 	/* ===== Antigravity Better v0.3.0 ===== */
 	console.log('[AB] Antigravity Better v0.3.0 Loading...');
-	// ===== Trusted Types Policy & HTML Sanitization =====
-	function sanitizeHTML(html) {
-		const s = String(html || '');
-		if (!s) return '';
-		if (!s.includes('<') && !s.includes('>')) return s;
-		try {
-			const parser = new DOMParser();
-			const doc = parser.parseFromString(s, 'text/html');
-			const badEls = doc.querySelectorAll('script, iframe, object, embed, applet, base, meta, link[rel="import"]');
-			badEls.forEach(n => n.remove());
-			const allEls = doc.querySelectorAll('*');
-			allEls.forEach(el => {
-				Array.from(el.attributes).forEach(attr => {
-					const name = attr.name.toLowerCase();
-					const val = attr.value.toLowerCase().trim();
-					if (name.startsWith('on') || val.startsWith('javascript:') || val.startsWith('vbscript:') || val.startsWith('data:text/html')) {
-						el.removeAttribute(attr.name);
-					}
-				});
-			});
-			return doc.body.innerHTML;
-		} catch (e) {
-			return escapeHtml(s);
-		}
-	}
+	// ===== Trusted Types Policy =====
 	let abPolicy = null;
 	if (window.trustedTypes && window.trustedTypes.createPolicy) {
 		try {
 			abPolicy = window.trustedTypes.createPolicy('antigravityBetter', {
 				createHTML(s) {
-					return sanitizeHTML(s);
+					return String(s || '');
 				},
 				createScriptURL(value) {
 					const url = String(value);
@@ -645,18 +621,17 @@
 	}
 	function safeSetHTML(el, html) {
 		try {
-			const clean = sanitizeHTML(html);
 			if (abPolicy && abPolicy.createHTML) {
-				el.innerHTML = abPolicy.createHTML(clean);
-				return;
+				el.innerHTML = abPolicy.createHTML(html);
+			} else {
+				el.innerHTML = html;
 			}
-			const parser = new DOMParser();
-			const doc = parser.parseFromString(clean, 'text/html');
-			while (el.firstChild) el.removeChild(el.firstChild);
-			Array.from(doc.body.childNodes).forEach(node => el.appendChild(node.cloneNode(true)));
 		} catch (e) {
-			while (el.firstChild) el.removeChild(el.firstChild);
-			el.textContent = String(html || '');
+			try {
+				el.innerHTML = html;
+			} catch (_) {
+				el.textContent = String(html || '');
+			}
 		}
 	}
 	const svgNS = 'http://www.w3.org/2000/svg';
@@ -3973,7 +3948,7 @@ this.renderDailyBreakdownTable();
                         dTableWrap.style.transition = 'all .2s ease';
 
                         const dTable = el('table', 'ab-daily-table');
-                        safeSetHTML(dTable, '<thead>' +
+                        safeSetHTML(dTable, '<thead id="ab-daily-thead">' +
                                 '<tr>' +
                                         '<th style="width:140px;">' + t('th_date') + '</th>' +
                                         '<th style="text-align:right;">' + t('th_tokens') + '</th>' +
@@ -3986,7 +3961,8 @@ this.renderDailyBreakdownTable();
                         '<tbody id="ab-daily-tbody">' +
 						'<tr><td colspan="6" style="text-align:center;color:#6b7280;padding:20px;">' + t('table_loading') + '</td></tr>' +
                         '</tbody>');
-					dTable.querySelector('thead').id = 'ab-daily-thead';
+					const dThead = dTable.querySelector('thead');
+				if (dThead) dThead.id = 'ab-daily-thead';
                         dTableWrap.appendChild(dTable);
 			dTableWrap.style.display = 'none';
 			dHeader.style.marginBottom = '0px';
